@@ -254,6 +254,7 @@ function Icon({ children, size = 16 }) {
     children
   );
 }
+const CheckSquare = (p) => /* @__PURE__ */ React.createElement(Icon, { ...p }, /* @__PURE__ */ React.createElement("rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }), /* @__PURE__ */ React.createElement("path", { d: "M8 12l3 3 5-6" }));
 const LayoutDashboard = (p) => /* @__PURE__ */ React.createElement(Icon, { ...p }, /* @__PURE__ */ React.createElement("rect", { x: "3", y: "3", width: "7", height: "9" }), /* @__PURE__ */ React.createElement("rect", { x: "14", y: "3", width: "7", height: "5" }), /* @__PURE__ */ React.createElement("rect", { x: "14", y: "12", width: "7", height: "9" }), /* @__PURE__ */ React.createElement("rect", { x: "3", y: "16", width: "7", height: "5" }));
 const Factory = (p) => /* @__PURE__ */ React.createElement(Icon, { ...p }, /* @__PURE__ */ React.createElement("path", { d: "M2 20h20" }), /* @__PURE__ */ React.createElement("path", { d: "M4 20V10l6 4v-4l6 4V6l4 3v11" }));
 const Building2 = (p) => /* @__PURE__ */ React.createElement(Icon, { ...p }, /* @__PURE__ */ React.createElement("path", { d: "M6 22V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v18" }), /* @__PURE__ */ React.createElement("path", { d: "M14 9h4a1 1 0 0 1 1 1v12" }), /* @__PURE__ */ React.createElement("path", { d: "M9 22V4" }));
@@ -738,6 +739,18 @@ async function addActivityNote(opportunityId, note) {
   const { error } = await sb.from("opportunity_activity").insert({ opportunity_id: opportunityId, note });
   if (error) throw error;
 }
+async function fetchAllActivityGrouped() {
+  const sb = requireSupabase();
+  const { data, error } = await sb.from("opportunity_activity").select("opportunity_id,note,created_at").order("created_at", { ascending: true });
+  if (error) throw error;
+  const grouped = {};
+  (data || []).forEach((row) => {
+    if (!grouped[row.opportunity_id]) grouped[row.opportunity_id] = [];
+    const ts = row.created_at ? new Date(row.created_at).toLocaleString() : "";
+    grouped[row.opportunity_id].push(`[${ts}] ${row.note}`);
+  });
+  return grouped;
+}
 async function fetchActivityFeed(limit) {
   const sb = requireSupabase();
   const { data, error } = await sb.from("opportunity_activity").select("*, opportunities(title, end_customer, principal, stage)").order("created_at", { ascending: false }).limit(limit || 100);
@@ -753,7 +766,12 @@ function quoteFromRow(r) {
     defaultMultiplier: r.default_multiplier === null ? 0.65 : r.default_multiplier,
     lineItems: r.line_items || [],
     createdAt: r.created_at,
-    updatedAt: r.updated_at
+    updatedAt: r.updated_at,
+    status: r.status || "open",
+    linkedOppId: r.linked_opp_id || "",
+    linkedOppNumber: r.linked_opp_number || "",
+    attnName: r.attn_name || "",
+    bomNotes: r.bom_notes || ""
   };
 }
 function quoteToRow(q) {
@@ -764,8 +782,109 @@ function quoteToRow(q) {
     quote_date: q.date || null,
     default_multiplier: q.defaultMultiplier === "" || q.defaultMultiplier === null || q.defaultMultiplier === void 0 ? 0.65 : parseFloat(q.defaultMultiplier),
     line_items: q.lineItems || [],
-    updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    updated_at: (/* @__PURE__ */ new Date()).toISOString(),
+    status: q.status || "open",
+    linked_opp_id: q.linkedOppId || null,
+    linked_opp_number: q.linkedOppNumber || "",
+    attn_name: q.attnName || "",
+    bom_notes: q.bomNotes || ""
   };
+}
+async function fetchTodos() {
+  const sb = requireSupabase();
+  const { data: userData } = await sb.auth.getUser();
+  if (!userData || !userData.user) return [];
+  const { data, error } = await sb.from("todos").select("*").eq("user_id", userData.user.id).order("due_date", { ascending: true, nullsFirst: false });
+  if (error) throw error;
+  return data.map((r) => ({
+    id: r.id,
+    text: r.text,
+    done: r.done,
+    dueDate: r.due_date || "",
+    createdAt: r.created_at
+  }));
+}
+async function addTodo(text, dueDate) {
+  const sb = requireSupabase();
+  const { data: userData } = await sb.auth.getUser();
+  if (!userData || !userData.user) throw new Error("Not signed in");
+  const { error } = await sb.from("todos").insert({
+    user_id: userData.user.id,
+    created_by: userData.user.id,
+    text,
+    due_date: dueDate || null
+  });
+  if (error) throw error;
+}
+async function setTodoDone(id, done) {
+  const sb = requireSupabase();
+  const { error } = await sb.from("todos").update({ done, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", id);
+  if (error) throw error;
+}
+async function deleteTodo(id) {
+  const sb = requireSupabase();
+  const { error } = await sb.from("todos").delete().eq("id", id);
+  if (error) throw error;
+}
+function sortTodos(list) {
+  return [...list].sort((a, b) => {
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    if (!a.dueDate && !b.dueDate) return 0;
+    if (!a.dueDate) return 1;
+    if (!b.dueDate) return -1;
+    return a.dueDate.localeCompare(b.dueDate);
+  });
+}
+function TodosTab() {
+  const [todos, setTodos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newText, setNewText] = useState("");
+  const [newDate, setNewDate] = useState("");
+  const reload = () => {
+    fetchTodos().then((list) => {
+      setTodos(list);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  };
+  useEffect(() => {
+    reload();
+  }, []);
+  const handleAdd = async () => {
+    if (!newText.trim()) return;
+    await addTodo(newText.trim(), newDate);
+    setNewText("");
+    setNewDate("");
+    reload();
+  };
+  const handleToggle = async (t) => {
+    await setTodoDone(t.id, !t.done);
+    setTodos((prev) => sortTodos(prev.map((x) => x.id === t.id ? { ...x, done: !x.done } : x)));
+  };
+  const handleDelete = async (id) => {
+    await deleteTodo(id);
+    setTodos((prev) => prev.filter((x) => x.id !== id));
+  };
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const sorted = sortTodos(todos);
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-4 max-w-2xl" },
+    /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, "Quick notes for yourself \u2014 things to follow up on. Sorted by due date, oldest first."),
+    /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 flex items-center gap-2" },
+      /* @__PURE__ */ React.createElement("input", { value: newText, onChange: (e) => setNewText(e.target.value), onKeyDown: (e) => e.key === "Enter" && handleAdd(), placeholder: "Call back Jorge about EDC stamping quote\u2026", className: "flex-1 px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" }),
+      /* @__PURE__ */ React.createElement("input", { type: "date", value: newDate, onChange: (e) => setNewDate(e.target.value), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none" }),
+      /* @__PURE__ */ React.createElement("button", { onClick: handleAdd, className: "px-3 py-1.5 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C" } }, /* @__PURE__ */ React.createElement(Plus, { size: 16 }))
+    ),
+    loading ? /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-6" }, "Loading\u2026") : sorted.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-6" }, "Nothing on your list \u2014 add something above.") : /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, sorted.map((t) => {
+      const overdue = t.dueDate && t.dueDate < today && !t.done;
+      return /* @__PURE__ */ React.createElement("div", { key: t.id, className: "flex items-center gap-3 px-3 py-2 rounded-md hover-row border-b border-subtle" },
+        /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: t.done, onChange: () => handleToggle(t), style: { width: 16, height: 16, flexShrink: 0 } }),
+        /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-0" },
+          /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: t.done ? "#8890A0" : "#E6E8EC", textDecoration: t.done ? "line-through" : "none" } }, t.text),
+          t.dueDate && /* @__PURE__ */ React.createElement("div", { className: "text-11", style: { color: overdue ? "#E5484D" : "#8890A0" } }, "Due ", t.dueDate, overdue ? " \u2014 overdue" : "")
+        ),
+        /* @__PURE__ */ React.createElement("button", { onClick: () => handleDelete(t.id), className: "p-1 rounded-md text-negative hover-row" }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }))
+      );
+    }))
+  );
 }
 async function fetchQuotesRemote() {
   const sb = requireSupabase();
@@ -1379,6 +1498,35 @@ function TimelineFeed({ feed, loading }) {
     return /* @__PURE__ */ React.createElement("div", { key: item.id, className: "rounded-lg border border-default bg-panel p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-2 mb-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm text-heading font-semibold truncate" }, opp.title || "Opportunity"), /* @__PURE__ */ React.createElement("span", { className: "text-10 text-faint font-mono shrink-0" }, timeAgo(item.created_at))), /* @__PURE__ */ React.createElement("div", { className: "text-11 text-muted mb-1" }, opp.end_customer, opp.principal ? ` \xB7 ${PRINCIPAL_LABELS[opp.principal] || opp.principal}` : "", opp.stage && /* @__PURE__ */ React.createElement("span", { className: "ml-2", style: { color: OPP_STAGE_COLORS[opp.stage] } }, opp.stage)), /* @__PURE__ */ React.createElement("div", { className: "text-sm text-body" }, item.note));
   }));
 }
+function PipelineChart({ opps }) {
+  const byStage = {};
+  opps.forEach((o) => {
+    const stage = o.stage || "Active";
+    const v = parseFloat(o.value) || 0;
+    if (!byStage[stage]) byStage[stage] = { stage, value: 0, count: 0 };
+    byStage[stage].value += v;
+    byStage[stage].count += 1;
+  });
+  const chartData = Object.values(byStage).sort((a, b) => b.value - a.value);
+  const total = chartData.reduce((s, d) => s + d.value, 0);
+  if (chartData.length === 0) {
+    return /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-8" }, "No opportunity values to chart yet.");
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-4" },
+    /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4" }, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Total pipeline value"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-xl text-heading" }, fmtPrice(total))),
+    /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4", style: { height: 320 } },
+      /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: "100%" },
+        /* @__PURE__ */ React.createElement(BarChart, { data: chartData, layout: "vertical", margin: { left: 20, right: 20 } },
+          /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: "#2A303B" }),
+          /* @__PURE__ */ React.createElement(XAxis, { type: "number", stroke: "#8890A0", tickFormatter: (v) => fmtPrice(v) }),
+          /* @__PURE__ */ React.createElement(YAxis, { type: "category", dataKey: "stage", stroke: "#8890A0", width: 100 }),
+          /* @__PURE__ */ React.createElement(Tooltip, { formatter: (v, n, entry) => [fmtPrice(v), `${entry.payload.count} opportunities`], contentStyle: { background: "#20262F", border: "1px solid #2A303B" } }),
+          /* @__PURE__ */ React.createElement(Bar, { dataKey: "value", fill: "#E8A33D", radius: [0, 4, 4, 0] })
+        )
+      )
+    )
+  );
+}
 function OpportunitiesTab() {
   const [opps, setOpps] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1497,8 +1645,18 @@ function OpportunitiesTab() {
     setEditingId(null);
     setFormOpen(true);
   };
-  const exportCSV = () => {
-    const headers = ["Opportunity Number", "Project Title", "End Customer", "State", "Decision Maker", "Principal", "Distributor", "Stage", "Approximate Value", "Target PO Date", "Follow-Up Date", "Description"];
+  const exportCSV = async () => {
+    const [activityByOpp, allQuotes] = await Promise.all([
+      fetchAllActivityGrouped().catch(() => ({})),
+      fetchQuotesRemote().catch(() => [])
+    ]);
+    const quotesByOpp = {};
+    allQuotes.forEach((q) => {
+      if (!q.linkedOppId) return;
+      if (!quotesByOpp[q.linkedOppId]) quotesByOpp[q.linkedOppId] = [];
+      quotesByOpp[q.linkedOppId].push(`${q.quoteRef} (${q.status || "open"}, ${fmtPrice(quoteSubtotal(q))})`);
+    });
+    const headers = ["Opportunity Number", "Project Title", "End Customer", "State", "Decision Maker", "Principal", "Distributor", "Stage", "Approximate Value", "Target PO Date", "Follow-Up Date", "Description", "Activity History", "Linked Quotes"];
     const rows = opps.map((o) => [
       o.oppNumber,
       o.title,
@@ -1511,7 +1669,9 @@ function OpportunitiesTab() {
       o.value,
       o.poDate,
       o.followUpDate,
-      (o.description || "").replace(/\n/g, " ")
+      (o.description || "").replace(/\n/g, " "),
+      (activityByOpp[o.id] || []).join(" | "),
+      (quotesByOpp[o.id] || []).join(" | ")
     ]);
     const csvEscape = (v) => {
       const s = String(v != null ? v : "");
@@ -1565,7 +1725,7 @@ function OpportunitiesTab() {
   };
   if (loading) return /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-8" }, "Loading your opportunities\u2026");
   if (loadError) return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-5 text-sm text-body" }, "Couldn't load your opportunities: ", loadError, /* @__PURE__ */ React.createElement("button", { onClick: reload, className: "ml-3 text-accent underline" }, "Retry"));
-  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-5 max-w-6xl" }, /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint", style: { marginTop: -8 } }, "Synced across your devices. Export to hand off to your admin for CRM entry whenever you need to."), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-4 gap-4" }, stageCounts.filter((s) => s.count > 0 || ["Active", "Stalled"].includes(s.stage)).slice(0, 4).map((s) => /* @__PURE__ */ React.createElement("div", { key: s.stage, className: "rounded-lg border border-default bg-panel p-4" }, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wider text-faint mb-1" }, s.stage), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-2xl font-semibold", style: { color: OPP_STAGE_COLORS[s.stage] } }, s.count)))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setView("list"), className: "px-3 py-1.5 rounded-md text-xs font-medium", style: { background: view === "list" ? "#20262F" : "transparent", color: view === "list" ? "#F4F1EA" : "#8890A0", border: "1px solid #2A303B" } }, "List"), /* @__PURE__ */ React.createElement("button", { onClick: () => setView("timeline"), className: "px-3 py-1.5 rounded-md text-xs font-medium", style: { background: view === "timeline" ? "#20262F" : "transparent", color: view === "timeline" ? "#F4F1EA" : "#8890A0", border: "1px solid #2A303B" } }, "Timeline")), view === "timeline" ? /* @__PURE__ */ React.createElement(TimelineFeed, { feed: timelineFeed, loading: timelineLoading }) : /* @__PURE__ */ React.createElement(React.Fragment, null, !formOpen && /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("button", { onClick: startNew, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C" } }, /* @__PURE__ */ React.createElement(Plus, { size: 16 }), " New Opportunity"), /* @__PURE__ */ React.createElement("input", { type: "file", accept: ".csv,.xlsx,.xls", ref: importInputRef, onChange: handleImportFile, className: "hidden" }), /* @__PURE__ */ React.createElement("button", { onClick: () => importInputRef.current && importInputRef.current.click(), className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body" }, /* @__PURE__ */ React.createElement(Upload, { size: 16 }), " Import CSV/Excel"), /* @__PURE__ */ React.createElement("button", { onClick: exportCSV, disabled: opps.length === 0, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body", style: { opacity: opps.length === 0 ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement(Download, { size: 16 }), " Export CSV"), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-5 max-w-6xl" }, /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint", style: { marginTop: -8 } }, "Synced across your devices. Export to hand off to your admin for CRM entry whenever you need to."), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-4 gap-4" }, stageCounts.filter((s) => s.count > 0 || ["Active", "Stalled"].includes(s.stage)).slice(0, 4).map((s) => /* @__PURE__ */ React.createElement("div", { key: s.stage, className: "rounded-lg border border-default bg-panel p-4" }, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wider text-faint mb-1" }, s.stage), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-2xl font-semibold", style: { color: OPP_STAGE_COLORS[s.stage] } }, s.count)))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setView("list"), className: "px-3 py-1.5 rounded-md text-xs font-medium", style: { background: view === "list" ? "#20262F" : "transparent", color: view === "list" ? "#F4F1EA" : "#8890A0", border: "1px solid #2A303B" } }, "List"), /* @__PURE__ */ React.createElement("button", { onClick: () => setView("timeline"), className: "px-3 py-1.5 rounded-md text-xs font-medium", style: { background: view === "timeline" ? "#20262F" : "transparent", color: view === "timeline" ? "#F4F1EA" : "#8890A0", border: "1px solid #2A303B" } }, "Timeline"), /* @__PURE__ */ React.createElement("button", { onClick: () => setView("pipeline"), className: "px-3 py-1.5 rounded-md text-xs font-medium", style: { background: view === "pipeline" ? "#20262F" : "transparent", color: view === "pipeline" ? "#F4F1EA" : "#8890A0", border: "1px solid #2A303B" } }, "Pipeline")), view === "timeline" ? /* @__PURE__ */ React.createElement(TimelineFeed, { feed: timelineFeed, loading: timelineLoading }) : view === "pipeline" ? /* @__PURE__ */ React.createElement(PipelineChart, { opps }) : /* @__PURE__ */ React.createElement(React.Fragment, null, !formOpen && /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement("button", { onClick: startNew, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C" } }, /* @__PURE__ */ React.createElement(Plus, { size: 16 }), " New Opportunity"), /* @__PURE__ */ React.createElement("input", { type: "file", accept: ".csv,.xlsx,.xls", ref: importInputRef, onChange: handleImportFile, className: "hidden" }), /* @__PURE__ */ React.createElement("button", { onClick: () => importInputRef.current && importInputRef.current.click(), className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body" }, /* @__PURE__ */ React.createElement(Upload, { size: 16 }), " Import CSV/Excel"), /* @__PURE__ */ React.createElement("button", { onClick: exportCSV, disabled: opps.length === 0, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body", style: { opacity: opps.length === 0 ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement(Download, { size: 16 }), " Export CSV"), /* @__PURE__ */ React.createElement(
     "select",
     {
       value: stageFilter,
@@ -2095,7 +2255,7 @@ function PriceListsPanel({ refreshKey, onChanged }) {
     onChanged();
   } }));
 }
-const QUOTE_DISCLAIMER = "This is a budgetary proposal only, not an official quote. All formal quoting, order placement, pricing confirmation, and terms are handled through your authorized distributor. Pricing subject to change without notice and does not constitute an offer for sale.";
+const QUOTE_DISCLAIMER = "This is a budgetary proposal only, not an official quote. All formal quoting, order placement, pricing confirmation, and terms are handled through your authorized distributor. Pricing subject to change without notice and does not constitute an offer for sale. Lead times and stock availability change daily and are not guaranteed by this proposal.";
 function fmtPrice(v) {
   const n = num(v);
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -2125,8 +2285,24 @@ function generateQuotePDF(quote) {
   doc.setFontSize(10);
   doc.setTextColor(30);
   doc.text(`Customer: ${quote.customerName || "\u2014"}`, 14, 38);
-  doc.text(`Date: ${quote.date || ""}`, 14, 44);
-  doc.text(`Reference: ${quote.quoteRef || ""}`, 14, 50);
+  doc.text(`ATTN: ${quote.attnName || "\u2014"}`, 14, 44);
+  doc.text(`Date: ${quote.date || ""}`, 110, 38);
+  doc.text(`Reference: ${quote.quoteRef || ""}`, 110, 44);
+  let headerY = 50;
+  if (quote.linkedOppNumber) {
+    doc.text(`Opportunity: ${quote.linkedOppNumber}`, 14, headerY);
+    headerY += 6;
+  }
+  if (quote.bomNotes) {
+    doc.setFontSize(8.5);
+    doc.setTextColor(90);
+    const wrappedNotes = doc.splitTextToSize(`Project notes: ${quote.bomNotes}`, 182);
+    doc.text(wrappedNotes, 14, headerY);
+    headerY += wrappedNotes.length * 4.2 + 3;
+    doc.setFontSize(10);
+    doc.setTextColor(30);
+  }
+  const tableStartY = Math.max(58, headerY + 4);
   const lineItems = quote.lineItems || [];
   const rows = lineItems.map((li) => [
     String(li.qty || 0),
@@ -2138,7 +2314,7 @@ function generateQuotePDF(quote) {
     li.customerNote || ""
   ]);
   doc.autoTable({
-    startY: 58,
+    startY: tableStartY,
     head: [["Qty", "Part Number", "Description", "List Price", "Price", "Ext. Price", "Notes"]],
     body: rows,
     styles: { fontSize: 8, cellPadding: 2 },
@@ -2236,7 +2412,12 @@ function blankQuote() {
     date: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
     defaultMultiplier: 0.65,
     lineItems: [],
-    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    status: "open",
+    linkedOppId: "",
+    linkedOppNumber: "",
+    attnName: "",
+    bomNotes: ""
   };
 }
 function effectiveMultiplier(li, quote) {
@@ -2367,6 +2548,25 @@ function PartSearchAdd({ onAdd }) {
     /* @__PURE__ */ React.createElement("span", { className: "font-mono text-11 text-muted shrink-0" }, fmtPrice(p.listPrice))
   ))));
 }
+function OpportunityLinkPicker({ quote, onChange }) {
+  const [opps, setOpps] = useState([]);
+  useEffect(() => {
+    fetchOpportunities().then(setOpps).catch(() => setOpps([]));
+  }, []);
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1 col-span-2" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Linked opportunity"), /* @__PURE__ */ React.createElement(
+    "select",
+    {
+      value: quote.linkedOppId || "",
+      onChange: (e) => {
+        const opp = opps.find((o) => o.id === e.target.value);
+        onChange({ linkedOppId: e.target.value, linkedOppNumber: opp ? opp.oppNumber || "" : "" });
+      },
+      className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none"
+    },
+    /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 none \u2014"),
+    opps.map((o) => /* @__PURE__ */ React.createElement("option", { key: o.id, value: o.id }, `${o.oppNumber || "NEW"} \u2014 ${o.endCustomer || o.title || "Untitled"}`))
+  ));
+}
 function QuoteEditor({ quote, onSave, onClose }) {
   const [q, setQ] = useState(quote);
   const [shareStatus, setShareStatus] = useState(null);
@@ -2443,7 +2643,12 @@ function QuoteEditor({ quote, onSave, onClose }) {
       onChange: (e) => update({ defaultMultiplier: parseFloat(e.target.value) || 0 }),
       className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none font-mono"
     }
-  ))), /* @__PURE__ */ React.createElement(PartSearchAdd, { onAdd: addPart }), /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, q.lineItems.map((li) => /* @__PURE__ */ React.createElement(QuoteLineRow, { key: li.id, li, quote: q, onChange: (nl) => updateLine(li.id, nl), onRemove: () => removeLine(li.id) })), q.lineItems.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-6" }, "No line items yet \u2014 search above to add parts.")), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 flex items-center justify-between flex-wrap gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-6" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Subtotal (customer sees this)"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg text-heading" }, fmtPrice(subtotal))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Your total profit (internal only)"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg", style: { color: totalProfit < 0 ? "#D9694B" : "#6FAE8C" } }, fmtPrice(totalProfit))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Blended margin (internal only)"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg", style: { color: "#6FAE8C" } }, blendedMargin !== null ? (blendedMargin * 100).toFixed(1) + "%" : "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, className: "px-4 py-2 rounded-md text-xs font-medium text-muted" }, "Close"), /* @__PURE__ */ React.createElement("button", { onClick: handleSave, className: "px-4 py-2 rounded-md text-xs font-medium bg-panel border border-default text-body" }, "Save"), /* @__PURE__ */ React.createElement("button", { onClick: handleDownload, disabled: q.lineItems.length === 0, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body", style: { opacity: q.lineItems.length === 0 ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement(Download, { size: 16 }), " Download PDF"), /* @__PURE__ */ React.createElement("button", { onClick: handleShare, disabled: q.lineItems.length === 0, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C", opacity: q.lineItems.length === 0 ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement(ExternalLink, { size: 16 }), " Email"))), shareStatus && shareStatus !== "working" && /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, shareStatus));
+  ))), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 grid grid-cols-4 gap-3" },
+    /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "ATTN (customer contact)"), /* @__PURE__ */ React.createElement("input", { value: q.attnName || "", onChange: (e) => update({ attnName: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
+    /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Status"), /* @__PURE__ */ React.createElement("select", { value: q.status || "open", onChange: (e) => update({ status: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none" }, /* @__PURE__ */ React.createElement("option", { value: "open" }, "Open"), /* @__PURE__ */ React.createElement("option", { value: "closed" }, "Closed"))),
+    /* @__PURE__ */ React.createElement(OpportunityLinkPicker, { quote: q, onChange: (patch) => update(patch) }),
+    /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1 col-span-4" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "BOM / project description (notes about this quote as a whole)"), /* @__PURE__ */ React.createElement("textarea", { value: q.bomNotes || "", onChange: (e) => update({ bomNotes: e.target.value }), rows: 2, className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none resize-none" }))
+  ), /* @__PURE__ */ React.createElement(PartSearchAdd, { onAdd: addPart }), /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, q.lineItems.map((li) => /* @__PURE__ */ React.createElement(QuoteLineRow, { key: li.id, li, quote: q, onChange: (nl) => updateLine(li.id, nl), onRemove: () => removeLine(li.id) })), q.lineItems.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-6" }, "No line items yet \u2014 search above to add parts.")), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 flex items-center justify-between flex-wrap gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-6" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Subtotal (customer sees this)"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg text-heading" }, fmtPrice(subtotal))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Your total profit (internal only)"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg", style: { color: totalProfit < 0 ? "#D9694B" : "#6FAE8C" } }, fmtPrice(totalProfit))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Blended margin (internal only)"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg", style: { color: "#6FAE8C" } }, blendedMargin !== null ? (blendedMargin * 100).toFixed(1) + "%" : "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, className: "px-4 py-2 rounded-md text-xs font-medium text-muted" }, "Close"), /* @__PURE__ */ React.createElement("button", { onClick: handleSave, className: "px-4 py-2 rounded-md text-xs font-medium bg-panel border border-default text-body" }, "Save"), /* @__PURE__ */ React.createElement("button", { onClick: handleDownload, disabled: q.lineItems.length === 0, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body", style: { opacity: q.lineItems.length === 0 ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement(Download, { size: 16 }), " Download PDF"), /* @__PURE__ */ React.createElement("button", { onClick: handleShare, disabled: q.lineItems.length === 0, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C", opacity: q.lineItems.length === 0 ? 0.5 : 1 } }, /* @__PURE__ */ React.createElement(ExternalLink, { size: 16 }), " Email"))), shareStatus && shareStatus !== "working" && /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, shareStatus));
 }
 function QuotesTab() {
   const [quotes, setQuotes] = useState([]);
@@ -2457,6 +2662,9 @@ function QuotesTab() {
   }, []);
   const [seeding, setSeeding] = useState(true);
   const [seedProgress, setSeedProgress] = useState("");
+  const [statusFilter, setStatusFilter] = useState("open");
+  const [monthFilter, setMonthFilter] = useState("");
+  const [quoteSearch, setQuoteSearch] = useState("");
   const reloadQuotes = () => fetchQuotesRemote().then((list) => setQuotes(list.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")))).catch(() => setQuotes([]));
   useEffect(() => {
     reloadQuotes();
@@ -2484,7 +2692,24 @@ function QuotesTab() {
   if (seeding) {
     return /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm py-8 text-center" }, /* @__PURE__ */ React.createElement("div", null, "Setting up your price catalog on this device (first time only)\u2026"), seedProgress && /* @__PURE__ */ React.createElement("div", { className: "text-11 mt-2 font-mono" }, seedProgress), /* @__PURE__ */ React.createElement("div", { className: "text-10 mt-2" }, "This can take a couple of minutes for the larger catalogs \u2014 only happens once per device."));
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-5 max-w-6xl" }, /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint", style: { marginTop: -8 } }, "Budgetary proposals built from your uploaded price lists \u2014 not official quotes. Everything here lives only in this browser."), catalogEmpty && /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-accent bg-panel p-4 text-sm text-body" }, "No price lists loaded yet \u2014 upload one below before building a quote."), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("button", { onClick: startNew, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C" } }, /* @__PURE__ */ React.createElement(Plus, { size: 16 }), " New Quote"), /* @__PURE__ */ isAdmin && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowPriceLists((s) => !s), className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body" }, showPriceLists ? "Hide Price Lists" : "Manage Price Lists")), isAdmin && showPriceLists && /* @__PURE__ */ React.createElement(PriceListsPanel, { refreshKey, onChanged: () => setRefreshKey((k) => k + 1) }), /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, quotes.map((q) => /* @__PURE__ */ React.createElement("div", { key: q.id, className: "rounded-lg border border-default bg-panel p-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0 cursor-pointer", onClick: () => startEdit(q) }, /* @__PURE__ */ React.createElement("div", { className: "text-sm text-heading font-semibold" }, q.customerName || "Untitled customer", " ", /* @__PURE__ */ React.createElement("span", { className: "text-faint font-normal text-11" }, "\xB7 ", q.quoteRef)), /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, q.date, " \xB7 ", (q.lineItems || []).length, " line items \xB7 ", fmtPrice(quoteSubtotal(q)))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(q), className: "p-1.5 rounded-md text-muted hover-row" }, /* @__PURE__ */ React.createElement(Pencil, { size: 14 })), /* @__PURE__ */ React.createElement("button", { onClick: () => handleDelete(q.id), className: "p-1.5 rounded-md text-negative hover-row" }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }))))), quotes.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-8" }, 'No quotes yet \u2014 tap "New Quote" to build your first one.')));
+  const months = Array.from(new Set(quotes.map((q) => (q.date || "").slice(0, 7)).filter(Boolean))).sort().reverse();
+  const filteredQuotes = quotes.filter((q) => {
+    if (statusFilter !== "all" && (q.status || "open") !== statusFilter) return false;
+    if (monthFilter && (q.date || "").slice(0, 7) !== monthFilter) return false;
+    if (quoteSearch.trim()) {
+      const s = quoteSearch.trim().toLowerCase();
+      const hay = `${q.customerName} ${q.quoteRef} ${q.linkedOppNumber} ${q.attnName}`.toLowerCase();
+      if (!hay.includes(s)) return false;
+    }
+    return true;
+  });
+  const pipelineValue = quotes.filter((q) => (q.status || "open") === "open").reduce((s, q) => s + quoteSubtotal(q), 0);
+  const pipelineCount = quotes.filter((q) => (q.status || "open") === "open").length;
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-5 max-w-6xl" }, /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint", style: { marginTop: -8 } }, "Budgetary proposals built from your uploaded price lists \u2014 not official quotes. Synced to your account."), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-accent bg-panel p-4 flex items-center gap-8" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Open pipeline value"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg text-heading" }, fmtPrice(pipelineValue))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "Open quotes"), /* @__PURE__ */ React.createElement("div", { className: "font-mono text-lg text-heading" }, pipelineCount))), catalogEmpty && /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-accent bg-panel p-4 text-sm text-body" }, "No price lists loaded yet \u2014 upload one below before building a quote."), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("button", { onClick: startNew, className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium", style: { background: "#E8A33D", color: "#14171C" } }, /* @__PURE__ */ React.createElement(Plus, { size: 16 }), " New Quote"), /* @__PURE__ */ isAdmin && /* @__PURE__ */ React.createElement("button", { onClick: () => setShowPriceLists((s) => !s), className: "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-panel border border-default text-body" }, showPriceLists ? "Hide Price Lists" : "Manage Price Lists")), isAdmin && showPriceLists && /* @__PURE__ */ React.createElement(PriceListsPanel, { refreshKey, onChanged: () => setRefreshKey((k) => k + 1) }), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap" },
+    /* @__PURE__ */ React.createElement("input", { value: quoteSearch, onChange: (e) => setQuoteSearch(e.target.value), placeholder: "Search customer, ref, ATTN, opportunity\u2026", className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input flex-1 min-w-48" }),
+    /* @__PURE__ */ React.createElement("select", { value: statusFilter, onChange: (e) => setStatusFilter(e.target.value), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none" }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "All statuses"), /* @__PURE__ */ React.createElement("option", { value: "open" }, "Open"), /* @__PURE__ */ React.createElement("option", { value: "closed" }, "Closed")),
+    /* @__PURE__ */ React.createElement("select", { value: monthFilter, onChange: (e) => setMonthFilter(e.target.value), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "All months"), months.map((m) => /* @__PURE__ */ React.createElement("option", { key: m, value: m }, m)))
+  ), /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, filteredQuotes.map((q) => /* @__PURE__ */ React.createElement("div", { key: q.id, className: "rounded-lg border border-default bg-panel p-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", { className: "min-w-0 cursor-pointer", onClick: () => startEdit(q) }, /* @__PURE__ */ React.createElement("div", { className: "text-sm text-heading font-semibold flex items-center gap-2" }, q.customerName || "Untitled customer", " ", /* @__PURE__ */ React.createElement("span", { className: "text-faint font-normal text-11" }, "\xB7 ", q.quoteRef), /* @__PURE__ */ React.createElement(Chip, { color: q.status === "closed" ? "#8890A0" : "#3FB68B" }, q.status === "closed" ? "Closed" : "Open"), q.linkedOppNumber && /* @__PURE__ */ React.createElement(Chip, { color: "#5B8DBE" }, q.linkedOppNumber)), /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, q.date, " \xB7 ", (q.lineItems || []).length, " line items \xB7 ", fmtPrice(quoteSubtotal(q)))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => startEdit(q), className: "p-1.5 rounded-md text-muted hover-row" }, /* @__PURE__ */ React.createElement(Pencil, { size: 14 })), /* @__PURE__ */ React.createElement("button", { onClick: () => handleDelete(q.id), className: "p-1.5 rounded-md text-negative hover-row" }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }))))), quotes.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-8" }, 'No quotes yet \u2014 tap "New Quote" to build your first one.')));
 }
 function Chip({ children, color }) {
   return /* @__PURE__ */ React.createElement(
@@ -2705,6 +2930,7 @@ function SalesDashboard({ session }) {
     { id: "opportunities", label: "Opportunities", icon: Briefcase },
     { id: "news", label: "News", icon: Newspaper },
     { id: "quotes", label: "Quotes", icon: FileText },
+    { id: "todos", label: "To-Do", icon: CheckSquare },
     { id: "trends", label: "Trends", icon: TrendingUp }
   ];
   return /* @__PURE__ */ React.createElement("div", { className: "w-full min-h-screen flex app-shell", style: {
@@ -2744,7 +2970,7 @@ function SalesDashboard({ session }) {
     },
     /* @__PURE__ */ React.createElement(Upload, { size: 14 }),
     /* @__PURE__ */ React.createElement("span", { className: "app-upload-label" }, "Upload next month's report")
-  ))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 overflow-y-auto px-8 py-6 app-content" }, activeTab === "overview" && /* @__PURE__ */ React.createElement(OverviewTab, { data }), activeTab === "principals" && /* @__PURE__ */ React.createElement(PrincipalsTab, { data }), activeTab === "distributors" && /* @__PURE__ */ React.createElement(DistributorsTab, { data }), activeTab === "customers" && /* @__PURE__ */ React.createElement(CustomersTab, { data }), activeTab === "opportunities" && /* @__PURE__ */ React.createElement(OpportunitiesTab, null), activeTab === "news" && /* @__PURE__ */ React.createElement(NewsTab, { data }), activeTab === "quotes" && /* @__PURE__ */ React.createElement(QuotesTab, null), activeTab === "trends" && /* @__PURE__ */ React.createElement(TrendsTab, { data }))));
+  ))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 overflow-y-auto px-8 py-6 app-content" }, activeTab === "overview" && /* @__PURE__ */ React.createElement(OverviewTab, { data }), activeTab === "principals" && /* @__PURE__ */ React.createElement(PrincipalsTab, { data }), activeTab === "distributors" && /* @__PURE__ */ React.createElement(DistributorsTab, { data }), activeTab === "customers" && /* @__PURE__ */ React.createElement(CustomersTab, { data }), activeTab === "opportunities" && /* @__PURE__ */ React.createElement(OpportunitiesTab, null), activeTab === "news" && /* @__PURE__ */ React.createElement(NewsTab, { data }), activeTab === "quotes" && /* @__PURE__ */ React.createElement(QuotesTab, null), activeTab === "todos" && /* @__PURE__ */ React.createElement(TodosTab, null), activeTab === "trends" && /* @__PURE__ */ React.createElement(TrendsTab, { data }))));
 }
 const rootEl = document.getElementById("root");
 document.getElementById("boot-status").style.display = "none";
