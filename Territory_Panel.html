@@ -897,6 +897,9 @@ function blankSpaRequest() {
     primaryDistributor: "",
     distributorContact: "",
     endCustomerName: "",
+    customerAddress: "",
+    agreementType: "new",
+    existingAgreementNumber: "",
     status: "Draft",
     requestDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
     notes: "",
@@ -921,6 +924,9 @@ function spaFromRow(r) {
     primaryDistributor: r.primary_distributor || "",
     distributorContact: r.distributor_contact || "",
     endCustomerName: r.end_customer_name || "",
+    customerAddress: r.customer_address || "",
+    agreementType: r.agreement_type || "new",
+    existingAgreementNumber: r.existing_agreement_number || "",
     status: r.status || "Draft",
     requestDate: r.request_date || "",
     notes: r.notes || "",
@@ -936,6 +942,9 @@ function spaToRow(s) {
     primary_distributor: s.primaryDistributor || "",
     distributor_contact: s.distributorContact || "",
     end_customer_name: s.endCustomerName || "",
+    customer_address: s.customerAddress || "",
+    agreement_type: s.agreementType || "new",
+    existing_agreement_number: s.existingAgreementNumber || "",
     status: s.status || "Draft",
     request_date: s.requestDate || null,
     notes: s.notes || "",
@@ -2085,16 +2094,22 @@ let _isAdminCache = null;
 async function fetchMyProfile() {
   const sb = requireSupabase();
   const { data: userData } = await sb.auth.getUser();
-  if (!userData || !userData.user) return { fullName: "", email: "", phone: "" };
-  const { data, error } = await sb.from("profiles").select("full_name,email,phone").eq("user_id", userData.user.id).single();
-  if (error) return { fullName: "", email: userData.user.email || "", phone: "" };
-  return { fullName: data.full_name || "", email: data.email || userData.user.email || "", phone: data.phone || "" };
+  if (!userData || !userData.user) return { fullName: "", email: "", phone: "", positionTitle: "Regional Sales Manager", territoryRegion: "" };
+  const { data, error } = await sb.from("profiles").select("full_name,email,phone,position_title,territory_region").eq("user_id", userData.user.id).single();
+  if (error) return { fullName: "", email: userData.user.email || "", phone: "", positionTitle: "Regional Sales Manager", territoryRegion: "" };
+  return {
+    fullName: data.full_name || "",
+    email: data.email || userData.user.email || "",
+    phone: data.phone || "",
+    positionTitle: data.position_title || "Regional Sales Manager",
+    territoryRegion: data.territory_region || ""
+  };
 }
-async function saveMyProfile(fullName, phone) {
+async function saveMyProfile(fullName, phone, positionTitle, territoryRegion) {
   const sb = requireSupabase();
   const { data: userData } = await sb.auth.getUser();
   if (!userData || !userData.user) throw new Error("Not signed in");
-  const { error } = await sb.from("profiles").update({ full_name: fullName, phone }).eq("user_id", userData.user.id);
+  const { error } = await sb.from("profiles").update({ full_name: fullName, phone, position_title: positionTitle, territory_region: territoryRegion }).eq("user_id", userData.user.id);
   if (error) throw error;
 }
 async function checkIsAdmin() {
@@ -2396,7 +2411,7 @@ function generateSpaPDF(spa, preparedBy) {
   doc.setTextColor(90);
   doc.text("Special Pricing Agreement Request", 14, 32);
   doc.text(`Prepared by ${by.fullName || "\u2014"}`, 283, 12, { align: "right" });
-  doc.text("Automated Dynamics", 283, 17, { align: "right" });
+  doc.text(by.positionTitle || "Automated Dynamics", 283, 17, { align: "right" });
   doc.text(by.email || "", 283, 22, { align: "right" });
   doc.setFontSize(10);
   doc.setTextColor(30);
@@ -2406,7 +2421,9 @@ function generateSpaPDF(spa, preparedBy) {
   doc.text(`Primary Distributor: ${spa.primaryDistributor || "\u2014"}`, 14, 46);
   doc.text(`Distributor Contact: ${spa.distributorContact || "\u2014"}`, 110, 46);
   doc.text(`End Customer: ${spa.endCustomerName || "\u2014"}`, 200, 46);
-  let headerY = 52;
+  doc.text(`Customer Address: ${spa.customerAddress || "\u2014"}`, 14, 52);
+  doc.text(spa.agreementType === "existing" ? `Existing Agreement: ${spa.existingAgreementNumber || "(number unknown \u2014 see admin)"}` : "New Request", 110, 52);
+  let headerY = 58;
   if (spa.notes) {
     doc.setFontSize(8.5);
     doc.setTextColor(90);
@@ -2462,8 +2479,9 @@ function generateQuotePDF(quote, preparedBy) {
   doc.setFontSize(9);
   doc.setTextColor(90);
   doc.text(`Prepared by ${by.fullName || "\u2014"}`, 196, 12, { align: "right" });
-  doc.text("Automated Dynamics", 196, 17, { align: "right" });
-  doc.text(by.email || "", 196, 22, { align: "right" });
+  doc.text(by.positionTitle || "", 196, 17, { align: "right" });
+  doc.text("Automated Dynamics", 196, 22, { align: "right" });
+  doc.text(by.email || "", 196, 27, { align: "right" });
   doc.setFontSize(10);
   doc.setTextColor(30);
   doc.text(`Customer: ${quote.customerName || "\u2014"}`, 14, 38);
@@ -2830,6 +2848,9 @@ function SpaRequestEditor({ spa, onSave, onClose }) {
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Primary Distributor*"), /* @__PURE__ */ React.createElement("input", { value: s.primaryDistributor, onChange: (e) => update({ primaryDistributor: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Distributor Contact*"), /* @__PURE__ */ React.createElement("input", { value: s.distributorContact, onChange: (e) => update({ distributorContact: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "End Customer Contact Name*"), /* @__PURE__ */ React.createElement("input", { value: s.endCustomerName, onChange: (e) => update({ endCustomerName: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
+      /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1 col-span-2" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Customer Address (for POS)"), /* @__PURE__ */ React.createElement("input", { value: s.customerAddress, onChange: (e) => update({ customerAddress: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
+      /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Agreement"), /* @__PURE__ */ React.createElement("select", { value: s.agreementType, onChange: (e) => update({ agreementType: e.target.value }), className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none" }, /* @__PURE__ */ React.createElement("option", { value: "new" }, "New Request"), /* @__PURE__ */ React.createElement("option", { value: "existing" }, "Existing Agreement"))),
+      s.agreementType === "existing" && /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Existing SPA # (if you have it)"), /* @__PURE__ */ React.createElement("input", { value: s.existingAgreementNumber, onChange: (e) => update({ existingAgreementNumber: e.target.value }), placeholder: "OK if unknown \u2014 admin can look it up", className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1 col-span-4" }, /* @__PURE__ */ React.createElement("label", { className: "text-10 text-faint" }, "Notes"), /* @__PURE__ */ React.createElement("textarea", { value: s.notes, onChange: (e) => update({ notes: e.target.value }), rows: 2, className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none resize-none" }))
     ),
     /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, s.lineItems.map((li, idx) => /* @__PURE__ */ React.createElement(SpaLineRow, { key: idx, li, onChange: (newLine) => updateLine(idx, newLine), onRemove: () => removeLine(idx) }))),
@@ -3152,10 +3173,12 @@ async function saveSalesData(bundle, sourceFile) {
   });
   if (error) throw error;
 }
-function MyProfilePage() {
+function MyProfilePage({ onSaved }) {
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [positionTitle, setPositionTitle] = useState("Regional Sales Manager");
+  const [territoryRegion, setTerritoryRegion] = useState("");
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
   useEffect(() => {
@@ -3163,24 +3186,29 @@ function MyProfilePage() {
       setFullName(p.fullName);
       setPhone(p.phone);
       setEmail(p.email);
+      setPositionTitle(p.positionTitle || "Regional Sales Manager");
+      setTerritoryRegion(p.territoryRegion || "");
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
   const handleSave = async () => {
     setStatus("saving");
     try {
-      await saveMyProfile(fullName.trim(), phone.trim());
+      await saveMyProfile(fullName.trim(), phone.trim(), positionTitle.trim(), territoryRegion.trim());
       setStatus("saved");
+      onSaved && onSaved();
     } catch (e) {
       setStatus("Could not save: " + e.message);
     }
   };
   return /* @__PURE__ */ React.createElement("div", { className: "max-w-md flex flex-col gap-4" },
-    /* @__PURE__ */ React.createElement("div", { className: "text-sm text-body" }, "This shows up as \u201CPrepared by\u201D on your Quote and SPA Request PDFs."),
+    /* @__PURE__ */ React.createElement("div", { className: "text-sm text-body" }, "This shows up as \u201CPrepared by\u201D on your Quote and SPA Request PDFs, and in the sidebar header."),
     loading ? /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm py-2" }, "Loading\u2026") : /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-5 flex flex-col gap-3" },
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-11 text-body font-medium" }, "Full name"), /* @__PURE__ */ React.createElement("input", { value: fullName, onChange: (e) => setFullName(e.target.value), placeholder: "Jane Rep", className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-11 text-body font-medium" }, "Email"), /* @__PURE__ */ React.createElement("div", { className: "px-2 py-1.5 rounded-md text-sm bg-app border border-subtle text-body" }, email)),
       /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-11 text-body font-medium" }, "Phone (optional)"), /* @__PURE__ */ React.createElement("input", { value: phone, onChange: (e) => setPhone(e.target.value), placeholder: "(210) 555-0100", className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
+      /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-11 text-body font-medium" }, "Position"), /* @__PURE__ */ React.createElement("input", { value: positionTitle, onChange: (e) => setPositionTitle(e.target.value), placeholder: "Regional Sales Manager", className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
+      /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, /* @__PURE__ */ React.createElement("label", { className: "text-11 text-body font-medium" }, "Territory Region"), /* @__PURE__ */ React.createElement("input", { value: territoryRegion, onChange: (e) => setTerritoryRegion(e.target.value), placeholder: "San Antonio Region", className: "px-2 py-1.5 rounded-md text-sm bg-app border border-default text-body outline-none search-input" })),
       /* @__PURE__ */ React.createElement("button", { onClick: handleSave, className: "px-4 py-2 rounded-md text-sm font-semibold mt-1 self-start", style: { background: "#E8A33D", color: "#14171C" } }, "Save"),
       status && /* @__PURE__ */ React.createElement("div", { className: "text-11", style: { color: status.startsWith("Could not") ? "#E5484D" : "#8890A0" } }, status === "saving" ? "Saving\u2026" : status === "saved" ? "Saved." : status)
     )
@@ -3194,6 +3222,11 @@ function SalesDashboard({ session }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [error, setError] = useState(null);
   const [saveError, setSaveError] = useState(null);
+  const [myProfile, setMyProfile] = useState(null);
+  const loadProfile = () => fetchMyProfile().then(setMyProfile).catch(() => setMyProfile(null));
+  useEffect(() => {
+    loadProfile();
+  }, []);
   const fileInputRef = useRef(null);
   useEffect(() => {
     fetchSalesData().then((result) => {
@@ -3283,7 +3316,7 @@ function SalesDashboard({ session }) {
     fontFamily: "'IBM Plex Sans', -apple-system, sans-serif"
   } }, /* @__PURE__ */ React.createElement("style", null, `
         .font-mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
-      `), /* @__PURE__ */ React.createElement("div", { className: "w-56 shrink-0 border-r border-default flex flex-col py-6 px-3 app-sidebar", style: { background: "#171B22" } }, /* @__PURE__ */ React.createElement("div", { className: "px-2 mb-8 app-logo-block" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("img", { src: LOGO_DATA_URI, alt: "Company logo", style: { width: 28, height: 28, objectFit: "contain", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { className: "text-heading font-semibold text-sm tracking-wide" }, "TERRITORY PANEL")), /* @__PURE__ */ React.createElement("div", { className: "text-faint text-11 mt-1 pl-4" }, "San Antonio Region \xB7 ", data.currentYear)), /* @__PURE__ */ React.createElement("nav", { className: "flex flex-col gap-1 app-nav" }, tabs.map((t) => /* @__PURE__ */ React.createElement(
+      `), /* @__PURE__ */ React.createElement("div", { className: "w-56 shrink-0 border-r border-default flex flex-col py-6 px-3 app-sidebar", style: { background: "#171B22" } }, /* @__PURE__ */ React.createElement("div", { className: "px-2 mb-8 app-logo-block" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("img", { src: LOGO_DATA_URI, alt: "Company logo", style: { width: 28, height: 28, objectFit: "contain", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { className: "text-heading font-semibold text-sm tracking-wide" }, "TERRITORY PANEL")), /* @__PURE__ */ React.createElement("div", { className: "text-body text-11 mt-1 pl-4", style: { color: "#C5CAD3" } }, myProfile && myProfile.fullName ? myProfile.fullName : "Set up your profile", myProfile && myProfile.territoryRegion ? ` \xB7 ${myProfile.territoryRegion}` : "")), /* @__PURE__ */ React.createElement("nav", { className: "flex flex-col gap-1 app-nav" }, tabs.map((t) => /* @__PURE__ */ React.createElement(
     "button",
     {
       key: t.id,
@@ -3331,7 +3364,7 @@ function SalesDashboard({ session }) {
       style: { background: "transparent", color: "#F4F1EA", border: "1px solid #3A4150" }
     },
     "Sign out"
-  ))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 overflow-y-auto px-8 py-6 app-content" }, activeTab === "overview" && /* @__PURE__ */ React.createElement(OverviewTab, { data }), activeTab === "principals" && /* @__PURE__ */ React.createElement(PrincipalsTab, { data }), activeTab === "distributors" && /* @__PURE__ */ React.createElement(DistributorsTab, { data }), activeTab === "customers" && /* @__PURE__ */ React.createElement(CustomersTab, { data }), activeTab === "opportunities" && /* @__PURE__ */ React.createElement(OpportunitiesTab, null), activeTab === "news" && /* @__PURE__ */ React.createElement(NewsTab, { data }), activeTab === "quotes" && /* @__PURE__ */ React.createElement(QuotesTab, null), activeTab === "spa" && /* @__PURE__ */ React.createElement(SpaRequestsTab, null), activeTab === "todos" && /* @__PURE__ */ React.createElement(TodosTab, null), activeTab === "trends" && /* @__PURE__ */ React.createElement(TrendsTab, { data }), activeTab === "profile" && /* @__PURE__ */ React.createElement(MyProfilePage, null))));
+  ))), /* @__PURE__ */ React.createElement("div", { className: "flex-1 overflow-y-auto px-8 py-6 app-content" }, activeTab === "overview" && /* @__PURE__ */ React.createElement(OverviewTab, { data }), activeTab === "principals" && /* @__PURE__ */ React.createElement(PrincipalsTab, { data }), activeTab === "distributors" && /* @__PURE__ */ React.createElement(DistributorsTab, { data }), activeTab === "customers" && /* @__PURE__ */ React.createElement(CustomersTab, { data }), activeTab === "opportunities" && /* @__PURE__ */ React.createElement(OpportunitiesTab, null), activeTab === "news" && /* @__PURE__ */ React.createElement(NewsTab, { data }), activeTab === "quotes" && /* @__PURE__ */ React.createElement(QuotesTab, null), activeTab === "spa" && /* @__PURE__ */ React.createElement(SpaRequestsTab, null), activeTab === "todos" && /* @__PURE__ */ React.createElement(TodosTab, null), activeTab === "trends" && /* @__PURE__ */ React.createElement(TrendsTab, { data }), activeTab === "profile" && /* @__PURE__ */ React.createElement(MyProfilePage, { onSaved: loadProfile }))));
 }
 const rootEl = document.getElementById("root");
 document.getElementById("boot-status").style.display = "none";
