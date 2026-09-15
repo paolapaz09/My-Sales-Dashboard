@@ -512,12 +512,17 @@ function transformBundle(bundle) {
       });
     });
   }
+  const priorYtdByDistributor = {};
   if (prior && monthsElapsed > 0) {
     prior.principals.forEach((p) => {
       const pkey = p.key;
       let sum = 0;
       p.distributors.forEach((d) => {
-        for (let i = 0; i < monthsElapsed; i++) sum += num((d.months || [])[i]);
+        let dsum = 0;
+        for (let i = 0; i < monthsElapsed; i++) dsum += num((d.months || [])[i]);
+        sum += dsum;
+        const nameKey = pkey + "||" + norm(d.name).toLowerCase();
+        priorYtdByDistributor[nameKey] = (priorYtdByDistributor[nameKey] || 0) + dsum;
       });
       if (principalSummary[pkey]) principalSummary[pkey].priorYtd += sum;
     });
@@ -539,6 +544,7 @@ function transformBundle(bundle) {
           total_current: num(d.total_current),
           total_prev_year: num(d.total_prev_year),
           annualized: num(d.annualized),
+          priorYtd: priorYtdByDistributor[pkey + "||" + norm(d.name).toLowerCase()] || 0,
           months: d.months.map(num)
         });
       });
@@ -627,6 +633,35 @@ function transformBundle(bundle) {
   const lostAccounts = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current === 0);
   const growing = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current > 0).map((d) => ({ ...d, pctChange: (d.annualized - d.total_prev_year) / d.total_prev_year })).sort((a, b) => b.pctChange - a.pctChange);
   const declining = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current > 0).map((d) => ({ ...d, pctChange: (d.annualized - d.total_prev_year) / d.total_prev_year })).sort((a, b) => a.pctChange - b.pctChange);
+  const outlierInsights = [];
+  if (monthsElapsed > 0) {
+    PRINCIPAL_ORDER.forEach((pkey) => {
+      const ps = principalSummary[pkey];
+      if (!ps || !(ps.priorYtd > 0)) return;
+      const principalDelta = ps.total_current - ps.priorYtd;
+      if (Math.abs(principalDelta) < 3e3) return;
+      const dists = distributorRows.filter((d) => d.principal === pkey && d.priorYtd > 0);
+      const withDelta = dists.map((d) => ({ ...d, delta: d.total_current - d.priorYtd }));
+      withDelta.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+      const top = withDelta[0];
+      if (!top) return;
+      const share = Math.abs(top.delta) / Math.abs(principalDelta);
+      if (share >= 0.5 && Math.abs(top.delta) >= 3e3) {
+        outlierInsights.push({
+          principal: pkey,
+          principalName: PRINCIPAL_LABELS[pkey] || pkey,
+          distributor: top.distributor,
+          distributorDelta: top.delta,
+          distributorPrior: top.priorYtd,
+          distributorCurrent: top.total_current,
+          principalDelta,
+          share,
+          direction: top.delta >= 0 ? "up" : "down"
+        });
+      }
+    });
+    outlierInsights.sort((a, b) => Math.abs(b.distributorDelta) - Math.abs(a.distributorDelta));
+  }
   return {
     currentYear,
     priorYearKey,
@@ -646,6 +681,7 @@ function transformBundle(bundle) {
     grandTotalPrev,
     grandAnnualized,
     grandPriorYtd: PRINCIPAL_ORDER.reduce((s, k) => s + (principalSummary[k].priorYtd || 0), 0),
+    outlierInsights,
     newAccounts,
     lostAccounts,
     growing,
@@ -1094,6 +1130,30 @@ function ActionChecklist({ data }) {
     /* @__PURE__ */ React.createElement("span", { className: "text-sm text-body", style: { textDecoration: checked[item.id] ? "line-through" : "none" } }, item.text)
   ))));
 }
+function OutlierInsightsPanel({ data }) {
+  const insights = data.outlierInsights || [];
+  if (insights.length === 0) return null;
+  return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 flex flex-col gap-3" },
+    /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "What's Driving These Numbers"),
+    /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint -mt-2" }, "A single account can swing a principal's whole percentage. Here's what's actually behind the big moves, so one outlier doesn't distort how you read your territory."),
+    /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, insights.map((ins, i) => {
+      const color = ins.direction === "up" ? "#6FAE8C" : "#D9694B";
+      const pctOfPrincipal = Math.round(ins.share * 100);
+      return /* @__PURE__ */ React.createElement("div", { key: i, className: "flex items-start gap-3 px-3 py-2.5 rounded-md", style: { background: "#20262F" } },
+        /* @__PURE__ */ React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0 mt-1.5", style: { background: color } }),
+        /* @__PURE__ */ React.createElement("div", { className: "text-sm text-body leading-relaxed" },
+          /* @__PURE__ */ React.createElement("span", { className: "font-semibold text-heading" }, PRINCIPAL_LABELS[ins.principal] || ins.principalName),
+          "'s ", ins.principalDelta >= 0 ? "gain" : "drop", " is mostly one account: ",
+          /* @__PURE__ */ React.createElement("span", { className: "font-semibold text-heading" }, ins.distributor),
+          " went from ", fmtMoney(ins.distributorPrior), " to ", fmtMoney(ins.distributorCurrent),
+          " (", ins.direction === "up" ? "+" : "", fmtMoney(ins.distributorDelta), ") over the same stretch of months \u2014 about ",
+          /* @__PURE__ */ React.createElement("span", { style: { color }, className: "font-semibold" }, pctOfPrincipal, "%"),
+          " of ", PRINCIPAL_LABELS[ins.principal] || ins.principalName, "'s entire ", ins.principalDelta >= 0 ? "gain" : "swing", ". Worth a direct conversation with that account rather than reading it as a territory-wide trend."
+        )
+      );
+    }))
+  );
+}
 function GrowthByPrincipalTable({ data }) {
   const rows = PRINCIPAL_ORDER.map((k) => data.principalSummary[k]).filter((p) => p.total_current > 0 || p.total_prev_year > 0 || p.priorYtd > 0);
   if (rows.length === 0) return null;
@@ -1110,12 +1170,12 @@ function GrowthByPrincipalTable({ data }) {
     /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { minWidth: 640 } },
       /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-10 uppercase tracking-wide text-faint text-left border-b border-subtle" },
         /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium" }, "Principal"),
-        data.monthsElapsed > 0 && /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.priorYearKey, " YTD"),
-        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.currentYear, " YTD"),
-        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, "YTD Growth"),
-        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.priorYearKey, " Full Year"),
-        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.currentYear, " Run-Rate"),
-        /* @__PURE__ */ React.createElement("th", { className: "pb-2 font-medium text-right" }, "Run-Rate Growth")
+        data.monthsElapsed > 0 && /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.priorYearKey, " (Jan\u2013", MONTH_NAMES[data.monthsElapsed - 1], ")"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.currentYear, " (Jan\u2013", MONTH_NAMES[data.monthsElapsed - 1], ")"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, "Same-Months Growth"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.priorYearKey, " (All 12 Months)"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.currentYear, " Full-Year Projection"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 font-medium text-right" }, "Projected Growth")
       )),
       /* @__PURE__ */ React.createElement("tbody", null, rows.map((p) => {
         const yg = ytdGrowth(p);
@@ -1140,7 +1200,16 @@ function GrowthByPrincipalTable({ data }) {
         /* @__PURE__ */ React.createElement("td", { className: "pt-2 text-right font-mono" }, fmtPct(totals.total_prev_year > 0 ? (totals.annualized - totals.total_prev_year) / totals.total_prev_year : null))
       ))
     ),
-    /* @__PURE__ */ React.createElement("div", { className: "text-10 text-faint mt-3" }, "YTD Growth compares the same ", data.monthsElapsed, " months in both years. Run-Rate projects your current pace through Dec 31 and compares that to all of ", data.priorYearKey, ".")
+    /* @__PURE__ */ React.createElement("div",
+      { className: "text-10 text-faint mt-3" },
+      "\u201CSame-Months Growth\u201D compares the identical ",
+      data.monthsElapsed,
+      " months in both years \u2014 the fairest read on how you're actually trending. \u201CProjected Growth\u201D assumes the rest of ",
+      data.currentYear,
+      " continues at your current pace and compares that full-year estimate to all 12 months of ",
+      data.priorYearKey,
+      "."
+    )
   );
 }
 function OverviewTab({ data }) {
@@ -1168,9 +1237,9 @@ function OverviewTab({ data }) {
   ), /* @__PURE__ */ React.createElement(
     KPICard,
     {
-      label: "Run-Rate vs. Last Year",
+      label: "Full-Year Projection",
       value: fmtMoney(data.grandAnnualized, { compact: true }),
-      sub: growthPct !== null ? `Projects to ${fmtPct(growthPct)} vs. ${fmtMoney(data.grandTotalPrev, { compact: true })} full-year last year` : "\u2014",
+      sub: growthPct !== null ? `If the rest of the year holds pace: ${fmtPct(growthPct)} vs. ${fmtMoney(data.grandTotalPrev, { compact: true })} all of last year` : "\u2014",
       trend: growthPct > 0 ? "up" : growthPct < 0 ? "down" : null,
       icon: TrendingUp
     }
@@ -1192,7 +1261,7 @@ function OverviewTab({ data }) {
       trend: data.lostAccounts.length > 0 ? "down" : null,
       icon: ArrowDown
     }
-  )), /* @__PURE__ */ React.createElement(GrowthByPrincipalTable, { data }), /* @__PURE__ */ React.createElement(ActionChecklist, { data }), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-5" }, /* @__PURE__ */ React.createElement(SectionTitle, null, "Sales by Principal \u2014 YTD ", data.currentYear, " vs. Prior Full Year"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 280 }, /* @__PURE__ */ React.createElement(BarChart, { data: principalBarData, margin: { top: 4, right: 8, left: 0, bottom: 4 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: "#2A303B", vertical: false }), /* @__PURE__ */ React.createElement(XAxis, { dataKey: "name", tick: { fill: "#8890A0", fontSize: 11 }, axisLine: { stroke: "#2A303B" }, tickLine: false }), /* @__PURE__ */ React.createElement(
+  )), /* @__PURE__ */ React.createElement(GrowthByPrincipalTable, { data }), /* @__PURE__ */ React.createElement(OutlierInsightsPanel, { data }), /* @__PURE__ */ React.createElement(ActionChecklist, { data }), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-5" }, /* @__PURE__ */ React.createElement(SectionTitle, null, "Sales by Principal \u2014 YTD ", data.currentYear, " vs. Prior Full Year"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 280 }, /* @__PURE__ */ React.createElement(BarChart, { data: principalBarData, margin: { top: 4, right: 8, left: 0, bottom: 4 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: "#2A303B", vertical: false }), /* @__PURE__ */ React.createElement(XAxis, { dataKey: "name", tick: { fill: "#8890A0", fontSize: 11 }, axisLine: { stroke: "#2A303B" }, tickLine: false }), /* @__PURE__ */ React.createElement(
     YAxis,
     {
       tick: { fill: "#8890A0", fontSize: 11 },
