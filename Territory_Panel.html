@@ -494,12 +494,34 @@ function transformBundle(bundle) {
   const years = bundle.years || {};
   const yearKeys = Object.keys(years).sort();
   const currentYear = yearKeys[yearKeys.length - 1];
+  const priorYearKey = yearKeys[yearKeys.length - 2];
+  const prior = priorYearKey ? years[priorYearKey] : null;
   const distributorRows = [];
   const principalSummary = {};
   PRINCIPAL_ORDER.forEach((k) => {
-    principalSummary[k] = { key: k, total_current: 0, total_prev_year: 0, annualized: 0 };
+    principalSummary[k] = { key: k, total_current: 0, total_prev_year: 0, annualized: 0, priorYtd: 0 };
   });
   const cur = years[currentYear];
+  let monthsElapsed = 0;
+  if (cur) {
+    cur.principals.forEach((p) => {
+      p.distributors.forEach((d) => {
+        (d.months || []).forEach((v, i) => {
+          if (v !== null && v !== void 0 && i + 1 > monthsElapsed) monthsElapsed = i + 1;
+        });
+      });
+    });
+  }
+  if (prior && monthsElapsed > 0) {
+    prior.principals.forEach((p) => {
+      const pkey = p.key;
+      let sum = 0;
+      p.distributors.forEach((d) => {
+        for (let i = 0; i < monthsElapsed; i++) sum += num((d.months || [])[i]);
+      });
+      if (principalSummary[pkey]) principalSummary[pkey].priorYtd += sum;
+    });
+  }
   if (cur) {
     cur.principals.forEach((p) => {
       const pkey = p.key;
@@ -607,6 +629,8 @@ function transformBundle(bundle) {
   const declining = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current > 0).map((d) => ({ ...d, pctChange: (d.annualized - d.total_prev_year) / d.total_prev_year })).sort((a, b) => a.pctChange - b.pctChange);
   return {
     currentYear,
+    priorYearKey,
+    monthsElapsed,
     yearKeys,
     principalSummary,
     distributorRows,
@@ -621,6 +645,7 @@ function transformBundle(bundle) {
     grandTotalCurrent,
     grandTotalPrev,
     grandAnnualized,
+    grandPriorYtd: PRINCIPAL_ORDER.reduce((s, k) => s + (principalSummary[k].priorYtd || 0), 0),
     newAccounts,
     lostAccounts,
     growing,
@@ -1069,6 +1094,55 @@ function ActionChecklist({ data }) {
     /* @__PURE__ */ React.createElement("span", { className: "text-sm text-body", style: { textDecoration: checked[item.id] ? "line-through" : "none" } }, item.text)
   ))));
 }
+function GrowthByPrincipalTable({ data }) {
+  const rows = PRINCIPAL_ORDER.map((k) => data.principalSummary[k]).filter((p) => p.total_current > 0 || p.total_prev_year > 0 || p.priorYtd > 0);
+  if (rows.length === 0) return null;
+  const totals = rows.reduce((acc, p) => ({
+    priorYtd: acc.priorYtd + (p.priorYtd || 0),
+    total_current: acc.total_current + (p.total_current || 0),
+    total_prev_year: acc.total_prev_year + (p.total_prev_year || 0),
+    annualized: acc.annualized + (p.annualized || 0)
+  }), { priorYtd: 0, total_current: 0, total_prev_year: 0, annualized: 0 });
+  const ytdGrowth = (p) => p.priorYtd > 0 ? (p.total_current - p.priorYtd) / p.priorYtd : null;
+  const runRateGrowth = (p) => p.total_prev_year > 0 ? (p.annualized - p.total_prev_year) / p.total_prev_year : null;
+  return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 overflow-x-auto" },
+    /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint mb-3" }, "Growth by Principal"),
+    /* @__PURE__ */ React.createElement("table", { className: "w-full text-sm", style: { minWidth: 640 } },
+      /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { className: "text-10 uppercase tracking-wide text-faint text-left border-b border-subtle" },
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium" }, "Principal"),
+        data.monthsElapsed > 0 && /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.priorYearKey, " YTD"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.currentYear, " YTD"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, "YTD Growth"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.priorYearKey, " Full Year"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 pr-3 font-medium text-right" }, data.currentYear, " Run-Rate"),
+        /* @__PURE__ */ React.createElement("th", { className: "pb-2 font-medium text-right" }, "Run-Rate Growth")
+      )),
+      /* @__PURE__ */ React.createElement("tbody", null, rows.map((p) => {
+        const yg = ytdGrowth(p);
+        const rg = runRateGrowth(p);
+        return /* @__PURE__ */ React.createElement("tr", { key: p.key, className: "border-b border-subtle" },
+          /* @__PURE__ */ React.createElement("td", { className: "py-2 pr-3 text-body flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: PRINCIPAL_COLORS[p.key] } }), PRINCIPAL_LABELS[p.key] || p.name),
+          data.monthsElapsed > 0 && /* @__PURE__ */ React.createElement("td", { className: "py-2 pr-3 text-right font-mono text-body" }, fmtMoney(p.priorYtd)),
+          /* @__PURE__ */ React.createElement("td", { className: "py-2 pr-3 text-right font-mono text-body" }, fmtMoney(p.total_current)),
+          /* @__PURE__ */ React.createElement("td", { className: "py-2 pr-3 text-right font-mono", style: { color: yg > 0 ? "#6FAE8C" : yg < 0 ? "#D9694B" : "#8890A0" } }, fmtPct(yg)),
+          /* @__PURE__ */ React.createElement("td", { className: "py-2 pr-3 text-right font-mono text-body" }, fmtMoney(p.total_prev_year)),
+          /* @__PURE__ */ React.createElement("td", { className: "py-2 pr-3 text-right font-mono text-body" }, fmtMoney(p.annualized)),
+          /* @__PURE__ */ React.createElement("td", { className: "py-2 text-right font-mono", style: { color: rg > 0 ? "#6FAE8C" : rg < 0 ? "#D9694B" : "#8890A0" } }, fmtPct(rg))
+        );
+      })),
+      /* @__PURE__ */ React.createElement("tfoot", null, /* @__PURE__ */ React.createElement("tr", { className: "text-heading font-semibold" },
+        /* @__PURE__ */ React.createElement("td", { className: "pt-2 pr-3" }, "Totals"),
+        data.monthsElapsed > 0 && /* @__PURE__ */ React.createElement("td", { className: "pt-2 pr-3 text-right font-mono" }, fmtMoney(totals.priorYtd)),
+        /* @__PURE__ */ React.createElement("td", { className: "pt-2 pr-3 text-right font-mono" }, fmtMoney(totals.total_current)),
+        /* @__PURE__ */ React.createElement("td", { className: "pt-2 pr-3 text-right font-mono" }, fmtPct(totals.priorYtd > 0 ? (totals.total_current - totals.priorYtd) / totals.priorYtd : null)),
+        /* @__PURE__ */ React.createElement("td", { className: "pt-2 pr-3 text-right font-mono" }, fmtMoney(totals.total_prev_year)),
+        /* @__PURE__ */ React.createElement("td", { className: "pt-2 pr-3 text-right font-mono" }, fmtMoney(totals.annualized)),
+        /* @__PURE__ */ React.createElement("td", { className: "pt-2 text-right font-mono" }, fmtPct(totals.total_prev_year > 0 ? (totals.annualized - totals.total_prev_year) / totals.total_prev_year : null))
+      ))
+    ),
+    /* @__PURE__ */ React.createElement("div", { className: "text-10 text-faint mt-3" }, "YTD Growth compares the same ", data.monthsElapsed, " months in both years. Run-Rate projects your current pace through Dec 31 and compares that to all of ", data.priorYearKey, ".")
+  );
+}
 function OverviewTab({ data }) {
   const growthPct = data.grandTotalPrev > 0 ? (data.grandAnnualized - data.grandTotalPrev) / data.grandTotalPrev : null;
   const principalBarData = PRINCIPAL_ORDER.map((k) => {
@@ -1096,7 +1170,7 @@ function OverviewTab({ data }) {
     {
       label: "Run-Rate vs. Last Year",
       value: fmtMoney(data.grandAnnualized, { compact: true }),
-      sub: growthPct !== null ? `${fmtPct(growthPct)} vs. ${fmtMoney(data.grandTotalPrev, { compact: true })} in prior year` : "\u2014",
+      sub: growthPct !== null ? `Projects to ${fmtPct(growthPct)} vs. ${fmtMoney(data.grandTotalPrev, { compact: true })} full-year last year` : "\u2014",
       trend: growthPct > 0 ? "up" : growthPct < 0 ? "down" : null,
       icon: TrendingUp
     }
@@ -1118,7 +1192,7 @@ function OverviewTab({ data }) {
       trend: data.lostAccounts.length > 0 ? "down" : null,
       icon: ArrowDown
     }
-  )), /* @__PURE__ */ React.createElement(ActionChecklist, { data }), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-5" }, /* @__PURE__ */ React.createElement(SectionTitle, null, "Sales by Principal \u2014 YTD ", data.currentYear, " vs. Prior Full Year"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 280 }, /* @__PURE__ */ React.createElement(BarChart, { data: principalBarData, margin: { top: 4, right: 8, left: 0, bottom: 4 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: "#2A303B", vertical: false }), /* @__PURE__ */ React.createElement(XAxis, { dataKey: "name", tick: { fill: "#8890A0", fontSize: 11 }, axisLine: { stroke: "#2A303B" }, tickLine: false }), /* @__PURE__ */ React.createElement(
+  )), /* @__PURE__ */ React.createElement(GrowthByPrincipalTable, { data }), /* @__PURE__ */ React.createElement(ActionChecklist, { data }), /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-5" }, /* @__PURE__ */ React.createElement(SectionTitle, null, "Sales by Principal \u2014 YTD ", data.currentYear, " vs. Prior Full Year"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 280 }, /* @__PURE__ */ React.createElement(BarChart, { data: principalBarData, margin: { top: 4, right: 8, left: 0, bottom: 4 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: "#2A303B", vertical: false }), /* @__PURE__ */ React.createElement(XAxis, { dataKey: "name", tick: { fill: "#8890A0", fontSize: 11 }, axisLine: { stroke: "#2A303B" }, tickLine: false }), /* @__PURE__ */ React.createElement(
     YAxis,
     {
       tick: { fill: "#8890A0", fontSize: 11 },
