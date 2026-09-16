@@ -325,6 +325,58 @@ function norm(s) {
   if (s === null || s === void 0) return "";
   return String(s).replace(/\s+/g, " ").trim();
 }
+function robustDistKey(s) {
+  return norm(s).toLowerCase().replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+}
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = new Array(n + 1);
+  for (let j = 0; j <= n; j++) dp[j] = j;
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const temp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = temp;
+    }
+  }
+  return dp[n];
+}
+function nameSimilarity(a, b) {
+  if (!a.length && !b.length) return 1;
+  const dist = levenshtein(a, b);
+  return 1 - dist / Math.max(a.length, b.length);
+}
+function matchDistributorNames(currentNames, priorNames) {
+  const map = {};
+  const usedPrior = new Set();
+  currentNames.forEach((curName) => {
+    const curKey = robustDistKey(curName);
+    let exactMatch = priorNames.find((p) => !usedPrior.has(p) && robustDistKey(p) === curKey);
+    if (exactMatch) {
+      map[curName] = exactMatch;
+      usedPrior.add(exactMatch);
+      return;
+    }
+    let best = null, bestScore = 0;
+    priorNames.forEach((p) => {
+      if (usedPrior.has(p)) return;
+      const score = nameSimilarity(curKey, robustDistKey(p));
+      if (score > bestScore) {
+        best = p;
+        bestScore = score;
+      }
+    });
+    if (best && bestScore >= 0.82) {
+      map[curName] = best;
+      usedPrior.add(best);
+    }
+  });
+  return map;
+}
 function principalKey(label) {
   const u = norm(label).toUpperCase();
   for (const k of PRINCIPAL_ORDER) {
@@ -513,18 +565,28 @@ function transformBundle(bundle) {
     });
   }
   const priorYtdByDistributor = {};
-  if (prior && monthsElapsed > 0) {
-    prior.principals.forEach((p) => {
-      const pkey = p.key;
-      let sum = 0;
-      p.distributors.forEach((d) => {
+  if (prior && monthsElapsed > 0 && cur) {
+    PRINCIPAL_ORDER.forEach((pkey) => {
+      const curP = cur.principals.find((p) => p.key === pkey);
+      const priorP = prior.principals.find((p) => p.key === pkey);
+      if (!curP || !priorP) return;
+      const priorSums = {};
+      priorP.distributors.forEach((d) => {
         let dsum = 0;
         for (let i = 0; i < monthsElapsed; i++) dsum += num((d.months || [])[i]);
-        sum += dsum;
-        const nameKey = pkey + "||" + norm(d.name).toLowerCase();
-        priorYtdByDistributor[nameKey] = (priorYtdByDistributor[nameKey] || 0) + dsum;
+        priorSums[d.name] = (priorSums[d.name] || 0) + dsum;
       });
-      if (principalSummary[pkey]) principalSummary[pkey].priorYtd += sum;
+      const curNames = curP.distributors.map((d) => d.name);
+      const priorNames = priorP.distributors.map((d) => d.name);
+      const nameMap = matchDistributorNames(curNames, priorNames);
+      let principalPriorYtd = 0;
+      curNames.forEach((curName) => {
+        const matchedPrior = nameMap[curName];
+        const val = matchedPrior !== void 0 ? priorSums[matchedPrior] || 0 : 0;
+        priorYtdByDistributor[pkey + "||" + curName] = val;
+        principalPriorYtd += val;
+      });
+      if (principalSummary[pkey]) principalSummary[pkey].priorYtd += principalPriorYtd;
     });
   }
   if (cur) {
@@ -544,7 +606,7 @@ function transformBundle(bundle) {
           total_current: num(d.total_current),
           total_prev_year: num(d.total_prev_year),
           annualized: num(d.annualized),
-          priorYtd: priorYtdByDistributor[pkey + "||" + norm(d.name).toLowerCase()] || 0,
+          priorYtd: priorYtdByDistributor[pkey + "||" + d.name] || 0,
           months: d.months.map(num)
         });
       });
@@ -633,34 +695,31 @@ function transformBundle(bundle) {
   const lostAccounts = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current === 0);
   const growing = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current > 0).map((d) => ({ ...d, pctChange: (d.annualized - d.total_prev_year) / d.total_prev_year })).sort((a, b) => b.pctChange - a.pctChange);
   const declining = distributorRows.filter((d) => d.total_prev_year > 0 && d.total_current > 0).map((d) => ({ ...d, pctChange: (d.annualized - d.total_prev_year) / d.total_prev_year })).sort((a, b) => a.pctChange - b.pctChange);
-  const outlierInsights = [];
+  const principalBreakdowns = [];
   if (monthsElapsed > 0) {
     PRINCIPAL_ORDER.forEach((pkey) => {
       const ps = principalSummary[pkey];
-      if (!ps || !(ps.priorYtd > 0)) return;
+      if (!ps || !(ps.priorYtd > 0 || ps.total_current > 0)) return;
       const principalDelta = ps.total_current - ps.priorYtd;
-      if (Math.abs(principalDelta) < 3e3) return;
-      const dists = distributorRows.filter((d) => d.principal === pkey && d.priorYtd > 0);
-      const withDelta = dists.map((d) => ({ ...d, delta: d.total_current - d.priorYtd }));
-      withDelta.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-      const top = withDelta[0];
-      if (!top) return;
-      const share = Math.abs(top.delta) / Math.abs(principalDelta);
-      if (share >= 0.5 && Math.abs(top.delta) >= 3e3) {
-        outlierInsights.push({
-          principal: pkey,
-          principalName: PRINCIPAL_LABELS[pkey] || pkey,
-          distributor: top.distributor,
-          distributorDelta: top.delta,
-          distributorPrior: top.priorYtd,
-          distributorCurrent: top.total_current,
-          principalDelta,
-          share,
-          direction: top.delta >= 0 ? "up" : "down"
-        });
-      }
+      if (Math.abs(principalDelta) < 1e3) return;
+      const dists = distributorRows.filter((d) => d.principal === pkey && (d.priorYtd > 0 || d.total_current > 0));
+      const withDelta = dists.map((d) => ({ distributor: d.distributor, prior: d.priorYtd, current: d.total_current, delta: d.total_current - d.priorYtd })).filter((d) => Math.abs(d.delta) >= 500);
+      const decliners = withDelta.filter((d) => d.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 3);
+      const gainers = withDelta.filter((d) => d.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 3);
+      const shownTotal = decliners.reduce((s, d) => s + Math.abs(d.delta), 0) + gainers.reduce((s, d) => s + d.delta, 0);
+      if (decliners.length === 0 && gainers.length === 0) return;
+      principalBreakdowns.push({
+        principal: pkey,
+        principalName: PRINCIPAL_LABELS[pkey] || pkey,
+        principalDelta,
+        priorYtd: ps.priorYtd,
+        currentYtd: ps.total_current,
+        decliners,
+        gainers,
+        shareShown: Math.abs(principalDelta) > 0 ? Math.min(1, shownTotal / Math.abs(principalDelta)) : null
+      });
     });
-    outlierInsights.sort((a, b) => Math.abs(b.distributorDelta) - Math.abs(a.distributorDelta));
+    principalBreakdowns.sort((a, b) => Math.abs(b.principalDelta) - Math.abs(a.principalDelta));
   }
   return {
     currentYear,
@@ -681,7 +740,7 @@ function transformBundle(bundle) {
     grandTotalPrev,
     grandAnnualized,
     grandPriorYtd: PRINCIPAL_ORDER.reduce((s, k) => s + (principalSummary[k].priorYtd || 0), 0),
-    outlierInsights,
+    principalBreakdowns,
     newAccounts,
     lostAccounts,
     growing,
@@ -1131,27 +1190,29 @@ function ActionChecklist({ data }) {
   ))));
 }
 function OutlierInsightsPanel({ data }) {
-  const insights = data.outlierInsights || [];
-  if (insights.length === 0) return null;
-  return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 flex flex-col gap-3" },
-    /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "What's Driving These Numbers"),
-    /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint -mt-2" }, "A single account can swing a principal's whole percentage. Here's what's actually behind the big moves, so one outlier doesn't distort how you read your territory."),
-    /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, insights.map((ins, i) => {
-      const color = ins.direction === "up" ? "#6FAE8C" : "#D9694B";
-      const pctOfPrincipal = Math.round(ins.share * 100);
-      return /* @__PURE__ */ React.createElement("div", { key: i, className: "flex items-start gap-3 px-3 py-2.5 rounded-md", style: { background: "#20262F" } },
-        /* @__PURE__ */ React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0 mt-1.5", style: { background: color } }),
-        /* @__PURE__ */ React.createElement("div", { className: "text-sm text-body leading-relaxed" },
-          /* @__PURE__ */ React.createElement("span", { className: "font-semibold text-heading" }, PRINCIPAL_LABELS[ins.principal] || ins.principalName),
-          "'s ", ins.principalDelta >= 0 ? "gain" : "drop", " is mostly one account: ",
-          /* @__PURE__ */ React.createElement("span", { className: "font-semibold text-heading" }, ins.distributor),
-          " went from ", fmtMoney(ins.distributorPrior), " to ", fmtMoney(ins.distributorCurrent),
-          " (", ins.direction === "up" ? "+" : "", fmtMoney(ins.distributorDelta), ") over the same stretch of months \u2014 about ",
-          /* @__PURE__ */ React.createElement("span", { style: { color }, className: "font-semibold" }, pctOfPrincipal, "%"),
-          " of ", PRINCIPAL_LABELS[ins.principal] || ins.principalName, "'s entire ", ins.principalDelta >= 0 ? "gain" : "swing", ". Worth a direct conversation with that account rather than reading it as a territory-wide trend."
+  const breakdowns = data.principalBreakdowns || [];
+  if (breakdowns.length === 0) return null;
+  return /* @__PURE__ */ React.createElement("div", { className: "rounded-lg border border-default bg-panel p-4 flex flex-col gap-4" },
+    /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint" }, "What's Driving These Numbers"), /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint mt-1" }, "Which accounts are behind each principal's swing, comparing the same ", data.monthsElapsed, " months in both years \u2014 so one big account doesn't distort how you read the whole territory.")),
+    breakdowns.map((b) => {
+      const color = b.principalDelta >= 0 ? "#6FAE8C" : "#D9694B";
+      return /* @__PURE__ */ React.createElement("div", { key: b.principal, className: "rounded-md p-3", style: { background: "#20262F" } },
+        /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-2" },
+          /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: PRINCIPAL_COLORS[b.principal] } }), /* @__PURE__ */ React.createElement("span", { className: "text-sm font-semibold text-heading" }, b.principalName)),
+          /* @__PURE__ */ React.createElement("span", { className: "text-sm font-mono font-semibold", style: { color } }, b.principalDelta >= 0 ? "+" : "", fmtMoney(b.principalDelta), " net")
+        ),
+        /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-3" },
+          /* @__PURE__ */ React.createElement("div", null,
+            /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint mb-1" }, "Biggest drops"),
+            b.decliners.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, "None significant") : b.decliners.map((d, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-11 text-body flex justify-between gap-2 py-0.5" }, /* @__PURE__ */ React.createElement("span", { className: "truncate" }, d.distributor), /* @__PURE__ */ React.createElement("span", { className: "font-mono shrink-0", style: { color: "#D9694B" } }, fmtMoney(d.delta))))
+          ),
+          /* @__PURE__ */ React.createElement("div", null,
+            /* @__PURE__ */ React.createElement("div", { className: "text-10 uppercase tracking-wide text-faint mb-1" }, "Biggest gains"),
+            b.gainers.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-11 text-faint" }, "None significant") : b.gainers.map((d, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "text-11 text-body flex justify-between gap-2 py-0.5" }, /* @__PURE__ */ React.createElement("span", { className: "truncate" }, d.distributor), /* @__PURE__ */ React.createElement("span", { className: "font-mono shrink-0", style: { color: "#6FAE8C" } }, "+", fmtMoney(d.delta))))
+          )
         )
       );
-    }))
+    })
   );
 }
 function GrowthByPrincipalTable({ data }) {
