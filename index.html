@@ -946,6 +946,11 @@ async function setTodoDone(id, done) {
   const { error } = await sb.from("todos").update({ done, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", id);
   if (error) throw error;
 }
+async function setTodoDueDate(id, newDate) {
+  const sb = requireSupabase();
+  const { error } = await sb.from("todos").update({ due_date: newDate || null, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", id);
+  if (error) throw error;
+}
 async function deleteTodo(id) {
   const sb = requireSupabase();
   const { error } = await sb.from("todos").delete().eq("id", id);
@@ -965,6 +970,7 @@ function TodosTab() {
   const [loading, setLoading] = useState(true);
   const [newText, setNewText] = useState("");
   const [newDate, setNewDate] = useState("");
+  const [editingDateId, setEditingDateId] = useState(null);
   const reload = () => {
     fetchTodos().then((list) => {
       setTodos(list);
@@ -989,6 +995,11 @@ function TodosTab() {
     await deleteTodo(id);
     setTodos((prev) => prev.filter((x) => x.id !== id));
   };
+  const handleDateChange = async (id, newDate2) => {
+    await setTodoDueDate(id, newDate2);
+    setTodos((prev) => sortTodos(prev.map((x) => x.id === id ? { ...x, dueDate: newDate2 || "" } : x)));
+    setEditingDateId(null);
+  };
   const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const sorted = sortTodos(todos);
   return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-4 max-w-2xl" },
@@ -1000,12 +1011,32 @@ function TodosTab() {
     ),
     loading ? /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-6" }, "Loading\u2026") : sorted.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "text-faint text-sm text-center py-6" }, "Nothing on your list \u2014 add something above.") : /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-1" }, sorted.map((t) => {
       const overdue = t.dueDate && t.dueDate < today && !t.done;
+      const isEditingDate = editingDateId === t.id;
       return /* @__PURE__ */ React.createElement("div", { key: t.id, className: "flex items-center gap-3 px-3 py-2 rounded-md hover-row border-b border-subtle" },
         /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: t.done, onChange: () => handleToggle(t), style: { width: 16, height: 16, flexShrink: 0 } }),
         /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-0" },
           /* @__PURE__ */ React.createElement("div", { className: "text-sm", style: { color: t.done ? "#8890A0" : "#E6E8EC", textDecoration: t.done ? "line-through" : "none" } }, t.text),
-          t.dueDate && /* @__PURE__ */ React.createElement("div", { className: "text-11", style: { color: overdue ? "#E5484D" : "#8890A0" } }, "Due ", t.dueDate, overdue ? " \u2014 overdue" : "")
+          isEditingDate ? /* @__PURE__ */ React.createElement("input", {
+            type: "date",
+            autoFocus: true,
+            defaultValue: t.dueDate || "",
+            onBlur: (e) => handleDateChange(t.id, e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === "Enter") handleDateChange(t.id, e.target.value);
+              if (e.key === "Escape") setEditingDateId(null);
+            },
+            className: "mt-1 px-1.5 py-0.5 rounded-md text-11 bg-app border border-default text-body outline-none"
+          }) : t.dueDate ? /* @__PURE__ */ React.createElement("div", {
+            className: "text-11 cursor-pointer",
+            style: { color: overdue ? "#E5484D" : "#8890A0" },
+            onClick: () => setEditingDateId(t.id),
+            title: "Click to change due date"
+          }, "Due ", t.dueDate, overdue ? " \u2014 overdue" : "") : /* @__PURE__ */ React.createElement("div", {
+            className: "text-11 cursor-pointer text-faint",
+            onClick: () => setEditingDateId(t.id)
+          }, "+ Add due date")
         ),
+        !isEditingDate && t.dueDate && /* @__PURE__ */ React.createElement("button", { onClick: () => setEditingDateId(t.id), className: "p-1 rounded-md text-muted hover-row", title: "Edit due date" }, /* @__PURE__ */ React.createElement(Pencil, { size: 14 })),
         /* @__PURE__ */ React.createElement("button", { onClick: () => handleDelete(t.id), className: "p-1 rounded-md text-negative hover-row" }, /* @__PURE__ */ React.createElement(Trash2, { size: 14 }))
       );
     }))
